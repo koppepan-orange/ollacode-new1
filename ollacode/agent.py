@@ -11,6 +11,7 @@ from ollacode.prompts import SYSTEM_PROMPT
 from ollacode.tools import execute_tool, get_tool_schemas, validate_tool_call
 
 MAX_ITERATIONS = 30
+MAX_HISTORY_MESSAGES = 120
 
 
 class Agent:
@@ -36,8 +37,39 @@ class Agent:
 
     def chat(self, user_message: str) -> str:
         """Process a user message through the agentic loop."""
+        self._trim_history()
         self.messages.append({"role": "user", "content": user_message})
         return self._run_loop()
+
+    def _trim_history(self):
+        if len(self.messages) <= MAX_HISTORY_MESSAGES:
+            return
+
+        groups = []
+        index = 1
+        while index < len(self.messages):
+            group = [self.messages[index]]
+            index += 1
+            while index < len(self.messages) and self.messages[index].get("role") != "user":
+                group.append(self.messages[index])
+                index += 1
+            groups.append(group)
+
+        kept = []
+        total = 1
+        for group in reversed(groups):
+            if total + len(group) > MAX_HISTORY_MESSAGES:
+                break
+            kept.append(group)
+            total += len(group)
+
+        if not kept and groups:
+            kept = [groups[-1]]
+
+        kept.reverse()
+        self.messages = [self.messages[0]]
+        for group in kept:
+            self.messages.extend(group)
 
     def clear_history(self):
         """Reset conversation to system prompt only."""
