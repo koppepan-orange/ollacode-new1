@@ -212,6 +212,110 @@ def get_tool_schemas() -> list[dict[str, Any]]:
         {"type":"function","function":{"name":"browser_control","description":"Control a browser using Playwright.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"},"headless":{"type":"boolean","default":True},"steps":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"}},"required":["action"]}},"cwd":{"type":"string"}}}}},
     ]
 
-def execute_tool(name: str, args: dict[str, Any]) -> Any:
-    if name not in TOOLS:return {"error":f"Unknown tool: {name}"}
-    return TOOLS[name](**args)
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "object": return isinstance(value, dict)
+    if expected == "array": return isinstance(value, list)
+    if expected == "string": return isinstance(value, str)
+    if expected == "integer": return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "boolean": return isinstance(value, bool)
+    if expected == "number": return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
+
+
+def _validate_schema_value(value: Any, schema: dict[str, Any], path: str) -> list[str]:
+    errors = []
+    expected = schema.get("type")
+    if expected and not _schema_type_matches(value, expected):
+        errors.append(f"{path} must be {expected}")
+        return errors
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path} must be one of: {', '.join(map(str, schema['enum']))}")
+    if expected == "array":
+        item_schema = schema.get("items")
+        if item_schema:
+            for i, item in enumerate(value):
+                errors.extend(_validate_schema_value(item, item_schema, f"{path}[{i}]"))
+    if expected == "object":
+        properties = schema.get("properties", {})
+        for key, item in value.items():
+            if key in properties:
+                errors.extend(_validate_schema_value(item, properties[key], f"{path}.{key}"))
+        for key in schema.get("required", []):
+            if key not in value:
+                errors.append(f"{path}.{key} is required")
+    return errors
+
+
+def validate_tool_call(name: str, args: Any) -> dict[str, Any] | None:
+    if name not in TOOLS:
+        return {
+            "error": f"Unknown tool: {name}",
+            "error_type": "unknown_tool",
+            "tool": name,
+        }
+    if not isinstance(args, dict):
+        return {
+            "error": f"Tool arguments for {name} must be an object.",
+            "error_type": "invalid_arguments",
+            "tool": name,
+        }
+
+    schema = next(
+        (
+            item["function"]["parameters"]
+            for item in get_tool_schemas()
+            if item.get("function", {}).get("name") == name
+        ),
+        None,
+    )
+    if schema is None:
+        return {
+            "error": f"No schema found for tool: {name}",
+            "error_type": "schema_error",
+            "tool": name,
+        }
+
+    properties = schema.get("properties", {})
+    errors = [f"Unknown argument: {key}" for key in args if key not in properties]
+    for key, value in args.items():
+        if key in properties:
+            errors.extend(_validate_schema_value(value, properties[key], key))
+    for key in schema.get("required", []):
+        if key not in args:
+            errors.append(f"Missing required argument: {key}")
+
+    if errors:
+        return {
+            "error": "Invalid tool arguments.",
+            "error_type": "invalid_arguments",
+            "tool": name,
+            "details": errors,
+        }
+    return None
+
+
+def execute_tool(name: str, args: dict[str, Any], confirm: bool = False) -> Any:
+    validation_error = validate_tool_call(name, args)
+    if validation_error:
+        return validation_error
+    if name not in TOOLS:
+        return {"error": f"Unknown tool: {name}", "error_type": "unknown_tool"}
+
+    call_args = dict(args)
+    if name == "run_command":
+        call_args["confirm"] = confirm
+
+    try:
+        return TOOLS[name](**call_args)
+    except TypeError as e:
+        return {
+            "error": str(e),
+            "error_type": "execution_error",
+            "tool": name,
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "error_type": "execution_error",
+            "tool": name,
+        }
