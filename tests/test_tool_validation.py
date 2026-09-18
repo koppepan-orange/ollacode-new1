@@ -48,6 +48,10 @@ class ToolValidationTests(unittest.TestCase):
         self.assertEqual(result["error_type"], "invalid_arguments")
         self.assertTrue(any("steps[0].action must be one of" in x for x in result["details"]))
 
+    def test_unknown_tool_is_rejected(self):
+        result = validate_tool_call("not_a_tool", {})
+        self.assertEqual(result["error_type"], "unknown_tool")
+
     def test_execute_tool_does_not_raise_on_invalid_arguments(self):
         result = execute_tool("browser_control", {
             "action": "goto",
@@ -109,6 +113,23 @@ class ToolValidationTests(unittest.TestCase):
             self.assertEqual(agent.messages[-2]["tool_name"], "read_file")
             payload = agent.messages[-2]["content"]
             self.assertIn("invalid_arguments", payload)
+
+    def test_workspace_escape_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = Agent.__new__(Agent)
+            agent.work_dir = str(Path(tmp).resolve())
+
+            safe_args = {"path": "file.txt"}
+            prepared, error = agent._prepare_tool_args("read_file", safe_args)
+            self.assertIsNone(error)
+            self.assertEqual(prepared["cwd"], agent.work_dir)
+
+            _, error = agent._prepare_tool_args(
+                "read_file",
+                {"path": "file.txt", "cwd": str(Path(tmp).parent.resolve())},
+            )
+            self.assertIsNotNone(error)
+            self.assertEqual(error["error_type"], "security_error")
 
 
 if __name__ == "__main__":
