@@ -9,6 +9,23 @@ from ollacode.tools import execute_tool, validate_tool_call
 
 
 class ToolValidationTests(unittest.TestCase):
+    def test_history_is_trimmed_by_complete_turns(self):
+        agent = Agent.__new__(Agent)
+        agent.messages = [{"role": "system", "content": "system"}]
+
+        for i in range(70):
+            agent.messages.append({"role": "user", "content": f"user-{i}"})
+            agent.messages.append({"role": "assistant", "content": f"assistant-{i}"})
+            agent.messages.append({"role": "tool", "tool_name": "read_file", "content": f"tool-{i}"})
+
+        agent._trim_history()
+
+        self.assertEqual(agent.messages[0]["role"], "system")
+        self.assertLessEqual(len(agent.messages), 120)
+        self.assertEqual(agent.messages[-1]["content"], "tool-69")
+        self.assertEqual(agent.messages[-3]["role"], "user")
+        self.assertEqual(agent.messages[-3]["content"], "user-69")
+
     def test_unknown_argument_is_rejected(self):
         result = validate_tool_call("browser_control", {
             "action": "goto",
