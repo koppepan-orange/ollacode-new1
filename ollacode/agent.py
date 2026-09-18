@@ -19,7 +19,7 @@ class Agent:
         self,
         model: str = DEFAULT_MODEL,
         ollama_url: str = DEFAULT_OLLAMA_URL,
-        confirm_commands: bool = False,
+        confirm_commands: bool = True,
         work_dir: str = ".",
         ui: Any = None,
     ):
