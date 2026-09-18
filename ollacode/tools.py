@@ -27,7 +27,13 @@ def get_venv_pip_path(venv_dir: Path) -> Path:
 
 def _resolve_path(path: str, cwd: str | None = None) -> Path:
     p = Path(path)
-    return Path(cwd) / p if cwd and not p.is_absolute() else p
+    if not cwd:
+        return p
+    root = Path(cwd).resolve()
+    resolved = (root / p if not p.is_absolute() else p).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"Path is outside working directory: {path}")
+    return resolved
 
 def _decode_file(p: Path) -> tuple[str, str, bytes]:
     import chardet
