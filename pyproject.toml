@@ -1,12 +1,12 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ollacode"
 version = "0.1.0"
 description = "Local Claude Code style AI Agent CLI powered by Ollama"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.0",
