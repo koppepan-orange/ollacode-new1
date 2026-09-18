@@ -186,11 +186,27 @@ def tool_grep_search(pattern: str, path: str = ".", case_sensitive: bool = True,
     except re.error as e: return {"error":f"Invalid regex: {e}"}
     except Exception as e: return {"error":str(e)}
 
+SENSITIVE_ENV_PATTERN = re.compile(
+    r"(token|secret|password|passwd|api[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?key|credential|cookie|session)",
+    re.IGNORECASE,
+)
+
+
+def _get_python_env() -> dict[str, str]:
+    env = {}
+    for key, value in os.environ.items():
+        if SENSITIVE_ENV_PATTERN.search(key):
+            continue
+        env[key] = value
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def tool_python_env(action: str, venv_path: str | None = None, packages: list[str] | None = None, script: str | None = None, cwd: str | None = None) -> dict[str, Any]:
     work_dir=Path(cwd or "."); venv_dir=_resolve_path(venv_path,str(work_dir)) if venv_path else work_dir/".venv"; py=get_venv_python_path(venv_dir); pip=get_venv_pip_path(venv_dir)
     def run(cmd):
         try:
-            r=subprocess.run(cmd,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=300,cwd=str(work_dir)); return {"returncode":r.returncode,"stdout":r.stdout,"stderr":r.stderr}
+            r=subprocess.run(cmd,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=300,cwd=str(work_dir),env=_get_python_env()); return {"returncode":r.returncode,"stdout":r.stdout,"stderr":r.stderr}
         except subprocess.TimeoutExpired:return {"error":"Timed out"}
         except Exception as e:return {"error":str(e)}
     if action=="create":
