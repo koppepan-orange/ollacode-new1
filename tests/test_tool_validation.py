@@ -71,6 +71,14 @@ class ToolValidationTests(unittest.TestCase):
         result = validate_tool_call("not_a_tool", {})
         self.assertEqual(result["error_type"], "unknown_tool")
 
+    def test_tool_registry_matches_tool_schemas(self):
+        from ollacode.tools import TOOLS, get_tool_schemas
+        schema_names = {
+            item.get("function", {}).get("name")
+            for item in get_tool_schemas()
+        }
+        self.assertEqual(set(TOOLS), schema_names)
+
     def test_execute_tool_does_not_raise_on_invalid_arguments(self):
         result = execute_tool("browser_control", {
             "action": "goto",
