@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from ollacode.agent import Agent
+from ollacode.client import OllamaClient
 from ollacode.tools import execute_tool, validate_tool_call
 
 
@@ -130,6 +131,75 @@ class ToolValidationTests(unittest.TestCase):
             )
             self.assertIsNotNone(error)
             self.assertEqual(error["error_type"], "security_error")
+
+
+    def test_stream_accumulates_tool_calls(self):
+        client = OllamaClient()
+
+        first_call = {
+            "type": "function",
+            "function": {
+                "index": 0,
+                "name": "read_file",
+                "arguments": {"path": "one.txt"},
+            },
+        }
+        second_call = {
+            "type": "function",
+            "function": {
+                "index": 1,
+                "name": "read_file",
+                "arguments": {"path": "two.txt"},
+            },
+        }
+
+        chunks = [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "checking ",
+                    "tool_calls": [first_call],
+                }
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "files",
+                    "tool_calls": [second_call],
+                }
+            },
+            {
+                "done": True,
+                "eval_count": 10,
+                "eval_duration": 1000000000,
+            },
+        ]
+
+        client.chat_stream = lambda *args, **kwargs: iter(chunks)
+        result = client.collect_stream("test", [], tools=[])
+
+        self.assertEqual(result["message"]["content"], "checking files")
+        self.assertEqual(result["message"]["tool_calls"], [first_call, second_call])
+
+    def test_public_browser_ip_is_allowed(self):
+        from ollacode.tools import _validate_browser_url
+        _validate_browser_url("https://1.1.1.1")
+
+    def test_private_browser_ip_is_blocked(self):
+        from ollacode.tools import _validate_browser_url
+        with self.assertRaises(ValueError):
+            _validate_browser_url("http://127.0.0.1")
+
+    def test_non_http_browser_url_is_blocked(self):
+        from ollacode.tools import _validate_browser_url
+        with self.assertRaises(ValueError):
+            _validate_browser_url("file:///etc/passwd")
+
+    def test_private_ipv6_browser_ip_is_blocked(self):
+        from ollacode.tools import _validate_browser_url
+        with self.assertRaises(ValueError):
+            _validate_browser_url("http://[::1]")
+
 
 
 if __name__ == "__main__":
