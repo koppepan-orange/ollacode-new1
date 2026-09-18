@@ -209,7 +209,7 @@ def get_tool_schemas() -> list[dict[str, Any]]:
         {"type":"function","function":{"name":"grep_search","description":"Search for a regex pattern within files.","parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"case_sensitive":{"type":"boolean","default":True},"file_pattern":{"type":"string"},"max_results":{"type":"integer","default":50},"cwd":{"type":"string"}},"required":["pattern"]}}},
         {"type":"function","function":{"name":"python_env","description":"Manage Python virtual environments.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","info","install","run","run_module"]},"venv_path":{"type":"string"},"packages":{"type":"array","items":{"type":"string"}},"script":{"type":"string"},"cwd":{"type":"string"}},"required":["action"]}}},
         {"type":"function","function":{"name":"web_search","description":"Search the web via DuckDuckGo.","parameters":{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","default":5}},"required":["query"]}}},
-        {"type":"function","function":{"name":"browser_control","description":"Control a browser using Playwright.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"},"headless":{"type":"boolean","default":True},"steps":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"}},"required":["action"]}},"cwd":{"type":"string"}}}}},
+        {"type":"function","function":{"name":"browser_control","description":"Control a browser using Playwright.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"},"headless":{"type":"boolean","default":True},"steps":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"}},"required":["action"]}},"cwd":{"type":"string"}}}}},
     ]
 
 def _schema_type_matches(value: Any, expected: str) -> bool:
@@ -238,8 +238,10 @@ def _validate_schema_value(value: Any, schema: dict[str, Any], path: str) -> lis
     if expected == "object":
         properties = schema.get("properties", {})
         for key, item in value.items():
-            if key in properties:
-                errors.extend(_validate_schema_value(item, properties[key], f"{path}.{key}"))
+            if key not in properties:
+                errors.append(f"Unknown argument: {path}.{key}")
+                continue
+            errors.extend(_validate_schema_value(item, properties[key], f"{path}.{key}"))
         for key in schema.get("required", []):
             if key not in value:
                 errors.append(f"{path}.{key} is required")

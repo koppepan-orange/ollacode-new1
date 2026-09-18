@@ -8,7 +8,7 @@ from typing import Any
 from ollacode.client import OllamaClient
 from ollacode.config import DEFAULT_MODEL, DEFAULT_OLLAMA_URL
 from ollacode.prompts import SYSTEM_PROMPT
-from ollacode.tools import execute_tool, get_tool_schemas
+from ollacode.tools import execute_tool, get_tool_schemas, validate_tool_call
 
 MAX_ITERATIONS = 30
 
@@ -121,6 +121,7 @@ class Agent:
                             self.ui.show_tool_result(tool_name, result)
                         self.messages.append({
                             "role": "tool",
+                            "tool_name": tool_name,
                             "content": json.dumps(result, ensure_ascii=False),
                         })
                         continue
@@ -137,14 +138,19 @@ class Agent:
                     })
                     continue
 
-                tool_args, security_error = self._prepare_tool_args(tool_name, tool_args)
+                validation_error = validate_tool_call(tool_name, tool_args)
 
-                if security_error:
-                    result = security_error
+                if self.ui:
+                    self.ui.show_tool_call(tool_name, tool_args)
+
+                if validation_error:
+                    result = validation_error
                 else:
-                    if self.ui:
-                        self.ui.show_tool_call(tool_name, tool_args)
-                    result = execute_tool(tool_name, tool_args, confirm=self.confirm_commands)
+                    tool_args, security_error = self._prepare_tool_args(tool_name, tool_args)
+                    if security_error:
+                        result = security_error
+                    else:
+                        result = execute_tool(tool_name, tool_args, confirm=self.confirm_commands)
                 self.tool_call_count += 1
 
                 if self.ui:
@@ -152,6 +158,7 @@ class Agent:
 
                 self.messages.append({
                     "role": "tool",
+                    "tool_name": tool_name,
                     "content": json.dumps(result, ensure_ascii=False),
                 })
 
