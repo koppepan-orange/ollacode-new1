@@ -270,7 +270,15 @@ def tool_browser_control(action: str = "", url: str | None = None, selector: str
             return {"success":True,"result":result,"url":page.url}
     except ValueError as e:
         return {"error":str(e),"error_type":"security_error","action":action}
-    except Exception as e:return {"error":str(e),"action":action}
+    except Exception as e:
+        if blocked[0]:
+            return {
+                "error": blocked[1],
+                "error_type": "security_error",
+                "blocked_url": blocked[0],
+                "action": action,
+            }
+        return {"error":str(e),"action":action}
 
 TOOLS={"read_file":tool_read_file,"write_file":tool_write_file,"edit_file":tool_edit_file,"run_command":tool_run_command,"list_dir":tool_list_dir,"file_tree":tool_file_tree,"grep_search":tool_grep_search,"python_env":tool_python_env,"web_search":tool_web_search,"browser_control":tool_browser_control}
 
