@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from ollacode.client import OllamaClient
@@ -42,6 +43,35 @@ class Agent:
         """Reset conversation to system prompt only."""
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.tool_call_count = 0
+
+    def _prepare_tool_args(self, tool_name: str, tool_args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        args = dict(tool_args)
+        filesystem_tools = {
+            "read_file", "write_file", "edit_file", "run_command",
+            "list_dir", "file_tree", "grep_search", "python_env",
+            "browser_control",
+        }
+        if tool_name not in filesystem_tools:
+            return args, None
+
+        root = Path(self.work_dir).resolve()
+        raw_cwd = args.get("cwd")
+        requested = Path(raw_cwd) if raw_cwd is not None else root
+        resolved = (root / requested if not requested.is_absolute() else requested).resolve()
+
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            return args, {
+                "error": "Tool cwd is outside the agent workspace.",
+                "error_type": "security_error",
+                "tool": tool_name,
+                "workspace": str(root),
+                "requested_cwd": str(raw_cwd),
+            }
+
+        args["cwd"] = str(resolved)
+        return args, None
 
     def _run_loop(self) -> str:
         """Run the agentic loop until the model stops calling tools."""
@@ -107,20 +137,14 @@ class Agent:
                     })
                     continue
 
-                if tool_name == "run_command" and self.confirm_commands:
-                    tool_args["confirm"] = True
+                tool_args, security_error = self._prepare_tool_args(tool_name, tool_args)
 
-                if tool_name in (
-                    "read_file", "write_file", "edit_file", "run_command",
-                    "list_dir", "file_tree", "grep_search", "python_env",
-                    "browser_control"
-                ) and "cwd" not in tool_args:
-                    tool_args["cwd"] = self.work_dir
-
-                if self.ui:
-                    self.ui.show_tool_call(tool_name, tool_args)
-
-                result = execute_tool(tool_name, tool_args)
+                if security_error:
+                    result = security_error
+                else:
+                    if self.ui:
+                        self.ui.show_tool_call(tool_name, tool_args)
+                    result = execute_tool(tool_name, tool_args, confirm=self.confirm_commands)
                 self.tool_call_count += 1
 
                 if self.ui:
