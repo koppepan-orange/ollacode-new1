@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import json
 import os
 import platform
 import re
+import socket
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 DANGEROUS_PATTERNS = [
     r"\brm\s+-rf\s+/", r"\bformat\s+[a-zA-Z]:", r"\bdel\s+/[sS]\s+/[qQ]\s+",
@@ -34,6 +37,46 @@ def _resolve_path(path: str, cwd: str | None = None) -> Path:
     if not resolved.is_relative_to(root):
         raise ValueError(f"Path is outside working directory: {path}")
     return resolved
+
+def _validate_browser_url(url: str) -> None:
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("Browser URL must be a non-empty string.")
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Browser URL must use http or https.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Browser URL credentials are not allowed.")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Browser URL must contain a hostname.")
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as e:
+        raise ValueError("Browser URL contains an invalid port.") from e
+
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as e:
+            raise ValueError(f"Could not resolve browser host: {host}") from e
+        addresses = []
+        for info in infos:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0]))
+            except ValueError:
+                continue
+
+    if not addresses:
+        raise ValueError(f"Could not resolve browser host: {host}")
+
+    for address in addresses:
+        if not address.is_global:
+            raise ValueError(
+                f"Browser URL resolves to a non-public address: {address}"
+            )
+
 
 def _decode_file(p: Path) -> tuple[str, str, bytes]:
     import chardet
@@ -176,10 +219,32 @@ def tool_browser_control(action: str = "", url: str | None = None, selector: str
     shot=_resolve_path(screenshot_path,cwd) if screenshot_path else None
     try:
         with sync_playwright() as p:
-            browser=p.chromium.launch(headless=headless); page=browser.new_page()
+            browser=p.chromium.launch(headless=headless)
+            context=browser.new_context()
+            blocked=[None, None]
+
+            def guard_route(route):
+                request_url=route.request.url
+                parsed=urlsplit(request_url)
+                if parsed.scheme not in ("http", "https"):
+                    route.continue_()
+                    return
+                try:
+                    _validate_browser_url(request_url)
+                    route.continue_()
+                except ValueError as e:
+                    blocked[0]=request_url
+                    blocked[1]=str(e)
+                    route.abort()
+
+            context.route("**/*", guard_route)
+            page=context.new_page()
+
             def do(a):
                 act=a.get("action",""); u=a.get("url"); sel=a.get("selector"); val=a.get("text"); js=a.get("script")
-                if act=="goto": page.goto(u,wait_until="domcontentloaded")
+                if act=="goto":
+                    _validate_browser_url(u)
+                    page.goto(u,wait_until="domcontentloaded")
                 elif act=="click": page.click(sel)
                 elif act=="fill": page.fill(sel,val or "")
                 elif act=="screenshot":
@@ -188,12 +253,23 @@ def tool_browser_control(action: str = "", url: str | None = None, selector: str
                 elif act=="get_text": return page.locator(sel).inner_text() if sel else page.locator("body").inner_text()
                 elif act=="close": browser.close()
                 else: raise ValueError(f"Unknown browser action: {act}")
+
             if steps:
                 result=[do(s) for s in steps]
             else:
                 result=do({"action":action,"url":url,"selector":selector,"text":text,"script":script,"screenshot_path":str(shot) if shot else None})
+
+            if blocked[0]:
+                return {
+                    "error": blocked[1],
+                    "error_type": "security_error",
+                    "blocked_url": blocked[0],
+                    "action": action,
+                }
             if action=="close": return {"success":True}
             return {"success":True,"result":result,"url":page.url}
+    except ValueError as e:
+        return {"error":str(e),"error_type":"security_error","action":action}
     except Exception as e:return {"error":str(e),"action":action}
 
 TOOLS={"read_file":tool_read_file,"write_file":tool_write_file,"edit_file":tool_edit_file,"run_command":tool_run_command,"list_dir":tool_list_dir,"file_tree":tool_file_tree,"grep_search":tool_grep_search,"python_env":tool_python_env,"web_search":tool_web_search,"browser_control":tool_browser_control}
