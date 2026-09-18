@@ -1,0 +1,13 @@
+# Core dependencies
+rich>=13.0.0
+prompt_toolkit>=3.0.0
+platformdirs>=3.0.0
+
+# Web search
+duckduckgo-search>=4.0.0
+
+# File encoding detection
+chardet>=5.0.0
+
+# Browser automation (optional but recommended)
+playwright>=1.40.0
