@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from ollacode.client import OllamaClient
 from ollacode.config import DEFAULT_MODEL, DEFAULT_OLLAMA_URL
 from ollacode.prompts import SYSTEM_PROMPT
-from ollacode.tools import execute_tool, get_tool_schemas
+from ollacode.tools import execute_tool, get_tool_schemas, validate_tool_call
 
 MAX_ITERATIONS = 30
+MAX_HISTORY_MESSAGES = 120
 
 
 class Agent:
@@ -19,7 +21,7 @@ class Agent:
         self,
         model: str = DEFAULT_MODEL,
         ollama_url: str = DEFAULT_OLLAMA_URL,
-        confirm_commands: bool = False,
+        confirm_commands: bool = True,
         work_dir: str = ".",
         ui: Any = None,
     ):
@@ -35,13 +37,73 @@ class Agent:
 
     def chat(self, user_message: str) -> str:
         """Process a user message through the agentic loop."""
+        self._trim_history()
         self.messages.append({"role": "user", "content": user_message})
         return self._run_loop()
+
+    def _trim_history(self):
+        if len(self.messages) <= MAX_HISTORY_MESSAGES:
+            return
+
+        groups = []
+        index = 1
+        while index < len(self.messages):
+            group = [self.messages[index]]
+            index += 1
+            while index < len(self.messages) and self.messages[index].get("role") != "user":
+                group.append(self.messages[index])
+                index += 1
+            groups.append(group)
+
+        kept = []
+        total = 1
+        for group in reversed(groups):
+            if total + len(group) > MAX_HISTORY_MESSAGES:
+                break
+            kept.append(group)
+            total += len(group)
+
+        if not kept and groups:
+            kept = [groups[-1]]
+
+        kept.reverse()
+        self.messages = [self.messages[0]]
+        for group in kept:
+            self.messages.extend(group)
 
     def clear_history(self):
         """Reset conversation to system prompt only."""
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.tool_call_count = 0
+
+    def _prepare_tool_args(self, tool_name: str, tool_args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        args = dict(tool_args)
+        filesystem_tools = {
+            "read_file", "write_file", "edit_file", "run_command",
+            "list_dir", "file_tree", "grep_search", "python_env",
+            "browser_control",
+        }
+        if tool_name not in filesystem_tools:
+            return args, None
+
+        root = Path(self.work_dir).resolve()
+        raw_cwd = args.get("cwd")
+        requested = Path(raw_cwd) if raw_cwd is not None else root
+        resolved = (root / requested if not requested.is_absolute() else requested).resolve()
+
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            return args, {
+                "error": "Tool cwd is outside the agent workspace.",
+                "error_type": "security_error",
+                "tool": tool_name,
+                "workspace": str(root),
+                "requested_cwd": str(raw_cwd),
+            }
+
+        args["cwd"] = str(resolved)
+        return args, None
 
     def _run_loop(self) -> str:
         """Run the agentic loop until the model stops calling tools."""
@@ -91,6 +153,7 @@ class Agent:
                             self.ui.show_tool_result(tool_name, result)
                         self.messages.append({
                             "role": "tool",
+                            "tool_name": tool_name,
                             "content": json.dumps(result, ensure_ascii=False),
                         })
                         continue
@@ -107,20 +170,19 @@ class Agent:
                     })
                     continue
 
-                if tool_name == "run_command" and self.confirm_commands:
-                    tool_args["confirm"] = True
-
-                if tool_name in (
-                    "read_file", "write_file", "edit_file", "run_command",
-                    "list_dir", "file_tree", "grep_search", "python_env",
-                    "browser_control"
-                ) and "cwd" not in tool_args:
-                    tool_args["cwd"] = self.work_dir
+                validation_error = validate_tool_call(tool_name, tool_args)
 
                 if self.ui:
                     self.ui.show_tool_call(tool_name, tool_args)
 
-                result = execute_tool(tool_name, tool_args)
+                if validation_error:
+                    result = validation_error
+                else:
+                    tool_args, security_error = self._prepare_tool_args(tool_name, tool_args)
+                    if security_error:
+                        result = security_error
+                    else:
+                        result = execute_tool(tool_name, tool_args, confirm=self.confirm_commands)
                 self.tool_call_count += 1
 
                 if self.ui:
@@ -128,6 +190,7 @@ class Agent:
 
                 self.messages.append({
                     "role": "tool",
+                    "tool_name": tool_name,
                     "content": json.dumps(result, ensure_ascii=False),
                 })
 

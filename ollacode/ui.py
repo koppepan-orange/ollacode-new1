@@ -70,9 +70,12 @@ class OllaCodeUI:
         self.console.print(table)
 
     def show_tools(self):
-        from ollacode.tools import TOOLS
+        from ollacode.tools import TOOLS, get_tool_schemas
         table=Table(title="Available Tools",border_style="cyan"); table.add_column("Tool",style="green"); table.add_column("Description")
-        descriptions={"read_file":"Read file with line numbers","write_file":"Create or overwrite a file","edit_file":"Targeted string replacement","run_command":"Execute shell commands","list_dir":"List directory contents","file_tree":"Show project directory tree","grep_search":"Search code with regex","python_env":"Manage Python venv","web_search":"Search web via DuckDuckGo","browser_control":"Control browser with Playwright"}
+        descriptions={}
+        for item in get_tool_schemas():
+            function=item.get("function",{})
+            descriptions[function.get("name","")]=function.get("description","")
         for name in TOOLS: table.add_row(name,descriptions.get(name,""))
         self.console.print(table)
 

@@ -2,14 +2,23 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import json
 import os
 import platform
 import re
+import socket
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+PACKAGE_SPEC_PATTERN = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,-]+\])?"
+    r"(?:\s*(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9!.*+_-]+"
+    r"(?:\s*,\s*(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9!.*+_-]+)*)?$"
+)
 
 DANGEROUS_PATTERNS = [
     r"\brm\s+-rf\s+/", r"\bformat\s+[a-zA-Z]:", r"\bdel\s+/[sS]\s+/[qQ]\s+",
@@ -27,7 +36,53 @@ def get_venv_pip_path(venv_dir: Path) -> Path:
 
 def _resolve_path(path: str, cwd: str | None = None) -> Path:
     p = Path(path)
-    return Path(cwd) / p if cwd and not p.is_absolute() else p
+    if not cwd:
+        return p
+    root = Path(cwd).resolve()
+    resolved = (root / p if not p.is_absolute() else p).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"Path is outside working directory: {path}")
+    return resolved
+
+def _validate_browser_url(url: str) -> None:
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("Browser URL must be a non-empty string.")
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Browser URL must use http or https.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Browser URL credentials are not allowed.")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Browser URL must contain a hostname.")
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as e:
+        raise ValueError("Browser URL contains an invalid port.") from e
+
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as e:
+            raise ValueError(f"Could not resolve browser host: {host}") from e
+        addresses = []
+        for info in infos:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0]))
+            except ValueError:
+                continue
+
+    if not addresses:
+        raise ValueError(f"Could not resolve browser host: {host}")
+
+    for address in addresses:
+        if not address.is_global:
+            raise ValueError(
+                f"Browser URL resolves to a non-public address: {address}"
+            )
+
 
 def _decode_file(p: Path) -> tuple[str, str, bytes]:
     import chardet
@@ -131,11 +186,27 @@ def tool_grep_search(pattern: str, path: str = ".", case_sensitive: bool = True,
     except re.error as e: return {"error":f"Invalid regex: {e}"}
     except Exception as e: return {"error":str(e)}
 
+SENSITIVE_ENV_PATTERN = re.compile(
+    r"(token|secret|password|passwd|api[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?key|credential|cookie|session)",
+    re.IGNORECASE,
+)
+
+
+def _get_python_env() -> dict[str, str]:
+    env = {}
+    for key, value in os.environ.items():
+        if SENSITIVE_ENV_PATTERN.search(key):
+            continue
+        env[key] = value
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def tool_python_env(action: str, venv_path: str | None = None, packages: list[str] | None = None, script: str | None = None, cwd: str | None = None) -> dict[str, Any]:
     work_dir=Path(cwd or "."); venv_dir=_resolve_path(venv_path,str(work_dir)) if venv_path else work_dir/".venv"; py=get_venv_python_path(venv_dir); pip=get_venv_pip_path(venv_dir)
     def run(cmd):
         try:
-            r=subprocess.run(cmd,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=300,cwd=str(work_dir)); return {"returncode":r.returncode,"stdout":r.stdout,"stderr":r.stderr}
+            r=subprocess.run(cmd,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=300,cwd=str(work_dir),env=_get_python_env()); return {"returncode":r.returncode,"stdout":r.stdout,"stderr":r.stderr}
         except subprocess.TimeoutExpired:return {"error":"Timed out"}
         except Exception as e:return {"error":str(e)}
     if action=="create":
@@ -170,10 +241,32 @@ def tool_browser_control(action: str = "", url: str | None = None, selector: str
     shot=_resolve_path(screenshot_path,cwd) if screenshot_path else None
     try:
         with sync_playwright() as p:
-            browser=p.chromium.launch(headless=headless); page=browser.new_page()
+            browser=p.chromium.launch(headless=headless)
+            context=browser.new_context()
+            blocked=[None, None]
+
+            def guard_route(route):
+                request_url=route.request.url
+                parsed=urlsplit(request_url)
+                if parsed.scheme not in ("http", "https"):
+                    route.continue_()
+                    return
+                try:
+                    _validate_browser_url(request_url)
+                    route.continue_()
+                except ValueError as e:
+                    blocked[0]=request_url
+                    blocked[1]=str(e)
+                    route.abort()
+
+            context.route("**/*", guard_route)
+            page=context.new_page()
+
             def do(a):
                 act=a.get("action",""); u=a.get("url"); sel=a.get("selector"); val=a.get("text"); js=a.get("script")
-                if act=="goto": page.goto(u,wait_until="domcontentloaded")
+                if act=="goto":
+                    _validate_browser_url(u)
+                    page.goto(u,wait_until="domcontentloaded")
                 elif act=="click": page.click(sel)
                 elif act=="fill": page.fill(sel,val or "")
                 elif act=="screenshot":
@@ -182,13 +275,32 @@ def tool_browser_control(action: str = "", url: str | None = None, selector: str
                 elif act=="get_text": return page.locator(sel).inner_text() if sel else page.locator("body").inner_text()
                 elif act=="close": browser.close()
                 else: raise ValueError(f"Unknown browser action: {act}")
+
             if steps:
                 result=[do(s) for s in steps]
             else:
                 result=do({"action":action,"url":url,"selector":selector,"text":text,"script":script,"screenshot_path":str(shot) if shot else None})
+
+            if blocked[0]:
+                return {
+                    "error": blocked[1],
+                    "error_type": "security_error",
+                    "blocked_url": blocked[0],
+                    "action": action,
+                }
             if action=="close": return {"success":True}
             return {"success":True,"result":result,"url":page.url}
-    except Exception as e:return {"error":str(e),"action":action}
+    except ValueError as e:
+        return {"error":str(e),"error_type":"security_error","action":action}
+    except Exception as e:
+        if blocked[0]:
+            return {
+                "error": blocked[1],
+                "error_type": "security_error",
+                "blocked_url": blocked[0],
+                "action": action,
+            }
+        return {"error":str(e),"action":action}
 
 TOOLS={"read_file":tool_read_file,"write_file":tool_write_file,"edit_file":tool_edit_file,"run_command":tool_run_command,"list_dir":tool_list_dir,"file_tree":tool_file_tree,"grep_search":tool_grep_search,"python_env":tool_python_env,"web_search":tool_web_search,"browser_control":tool_browser_control}
 
@@ -201,11 +313,129 @@ def get_tool_schemas() -> list[dict[str, Any]]:
         {"type":"function","function":{"name":"list_dir","description":"List directory contents.","parameters":{"type":"object","properties":{"path":{"type":"string","default":"."},"cwd":{"type":"string"}}}}},
         {"type":"function","function":{"name":"file_tree","description":"Show project structure as a tree.","parameters":{"type":"object","properties":{"path":{"type":"string","default":"."},"max_depth":{"type":"integer","default":4},"exclude":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"}}}}},
         {"type":"function","function":{"name":"grep_search","description":"Search for a regex pattern within files.","parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"case_sensitive":{"type":"boolean","default":True},"file_pattern":{"type":"string"},"max_results":{"type":"integer","default":50},"cwd":{"type":"string"}},"required":["pattern"]}}},
-        {"type":"function","function":{"name":"python_env","description":"Manage Python virtual environments.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","info","install","run","run_module"]},"venv_path":{"type":"string"},"packages":{"type":"array","items":{"type":"string"}},"script":{"type":"string"},"cwd":{"type":"string"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"python_env","description":"Manage Python virtual environments.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","info","install","run","run_module"]},"venv_path":{"type":"string"},"packages":{"type":"array","items":{"type":"string","minLength":1,"maxLength":200,"pattern":PACKAGE_SPEC_PATTERN.pattern},"maxItems":20},"script":{"type":"string"},"cwd":{"type":"string"}},"required":["action"]}}},
         {"type":"function","function":{"name":"web_search","description":"Search the web via DuckDuckGo.","parameters":{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","default":5}},"required":["query"]}}},
-        {"type":"function","function":{"name":"browser_control","description":"Control a browser using Playwright.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"},"headless":{"type":"boolean","default":True},"steps":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"}},"required":["action"]}},"cwd":{"type":"string"}}}}},
+        {"type":"function","function":{"name":"browser_control","description":"Control a browser using Playwright.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"},"headless":{"type":"boolean","default":True},"steps":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"}},"required":["action"]}},"cwd":{"type":"string"}}}}},
     ]
 
-def execute_tool(name: str, args: dict[str, Any]) -> Any:
-    if name not in TOOLS:return {"error":f"Unknown tool: {name}"}
-    return TOOLS[name](**args)
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "object": return isinstance(value, dict)
+    if expected == "array": return isinstance(value, list)
+    if expected == "string": return isinstance(value, str)
+    if expected == "integer": return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "boolean": return isinstance(value, bool)
+    if expected == "number": return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
+
+
+def _validate_schema_value(value: Any, schema: dict[str, Any], path: str) -> list[str]:
+    errors = []
+    expected = schema.get("type")
+    if expected and not _schema_type_matches(value, expected):
+        errors.append(f"{path} must be {expected}")
+        return errors
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path} must be one of: {', '.join(map(str, schema['enum']))}")
+    if expected == "string":
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            errors.append(f"{path} must be at least {schema['minLength']} characters")
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"{path} must be at most {schema['maxLength']} characters")
+        if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
+            errors.append(f"{path} has an invalid format")
+    if expected == "array":
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errors.append(f"{path} must contain at least {schema['minItems']} item(s)")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(f"{path} must contain at most {schema['maxItems']} item(s)")
+
+        item_schema = schema.get("items")
+        if item_schema:
+            for i, item in enumerate(value):
+                errors.extend(_validate_schema_value(item, item_schema, f"{path}[{i}]"))
+    if expected == "object":
+        properties = schema.get("properties", {})
+        for key, item in value.items():
+            if key not in properties:
+                errors.append(f"Unknown argument: {path}.{key}")
+                continue
+            errors.extend(_validate_schema_value(item, properties[key], f"{path}.{key}"))
+        for key in schema.get("required", []):
+            if key not in value:
+                errors.append(f"{path}.{key} is required")
+    return errors
+
+
+def validate_tool_call(name: str, args: Any) -> dict[str, Any] | None:
+    if name not in TOOLS:
+        return {
+            "error": f"Unknown tool: {name}",
+            "error_type": "unknown_tool",
+            "tool": name,
+        }
+    if not isinstance(args, dict):
+        return {
+            "error": f"Tool arguments for {name} must be an object.",
+            "error_type": "invalid_arguments",
+            "tool": name,
+        }
+
+    schema = next(
+        (
+            item["function"]["parameters"]
+            for item in get_tool_schemas()
+            if item.get("function", {}).get("name") == name
+        ),
+        None,
+    )
+    if schema is None:
+        return {
+            "error": f"No schema found for tool: {name}",
+            "error_type": "schema_error",
+            "tool": name,
+        }
+
+    properties = schema.get("properties", {})
+    errors = [f"Unknown argument: {key}" for key in args if key not in properties]
+    for key, value in args.items():
+        if key in properties:
+            errors.extend(_validate_schema_value(value, properties[key], key))
+    for key in schema.get("required", []):
+        if key not in args:
+            errors.append(f"Missing required argument: {key}")
+
+    if errors:
+        return {
+            "error": "Invalid tool arguments.",
+            "error_type": "invalid_arguments",
+            "tool": name,
+            "details": errors,
+        }
+    return None
+
+
+def execute_tool(name: str, args: dict[str, Any], confirm: bool = False) -> Any:
+    validation_error = validate_tool_call(name, args)
+    if validation_error:
+        return validation_error
+    if name not in TOOLS:
+        return {"error": f"Unknown tool: {name}", "error_type": "unknown_tool"}
+
+    call_args = dict(args)
+    if name == "run_command":
+        call_args["confirm"] = confirm
+
+    try:
+        return TOOLS[name](**call_args)
+    except TypeError as e:
+        return {
+            "error": str(e),
+            "error_type": "execution_error",
+            "tool": name,
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "error_type": "execution_error",
+            "tool": name,
+        }

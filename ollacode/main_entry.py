@@ -29,8 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-c", "--confirm-commands",
         action="store_true",
-        help="Ask for confirmation before each command",
+        help="Ask for confirmation before each command (default)",
     )
+    parser.add_argument(
+        "--no-confirm-commands",
+        dest="confirm_commands",
+        action="store_false",
+        help="Disable confirmation before commands",
+    )
+    parser.set_defaults(confirm_commands=True)
     parser.add_argument("-v", "--version", action="version", version=f"OllaCode {__version__}")
     return parser
 
