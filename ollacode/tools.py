@@ -15,9 +15,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 PACKAGE_SPEC_PATTERN = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\\[[A-Za-z0-9._,-]+\\])?"
-    r"(?:\\s*(?:===|==|!=|<=|>=|~=|<|>)\\s*[A-Za-z0-9!.*+_-]+"
-    r"(?:\\s*,\\s*(?:===|==|!=|<=|>=|~=|<|>)\\s*[A-Za-z0-9!.*+_-]+)*)?$"
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,-]+\])?"
+    r"(?:\s*(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9!.*+_-]+"
+    r"(?:\s*,\s*(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9!.*+_-]+)*)?$"
 )
 
 DANGEROUS_PATTERNS = [
