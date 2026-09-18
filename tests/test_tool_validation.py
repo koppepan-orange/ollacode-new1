@@ -1,3 +1,4 @@
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -199,6 +200,39 @@ class ToolValidationTests(unittest.TestCase):
         from ollacode.tools import _validate_browser_url
         with self.assertRaises(ValueError):
             _validate_browser_url("http://[::1]")
+
+    def test_private_dns_result_is_blocked(self):
+        from unittest.mock import patch
+        from ollacode.tools import _validate_browser_url
+
+        fake_info = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("10.0.0.1", 443),
+            )
+        ]
+        with patch("ollacode.tools.socket.getaddrinfo", return_value=fake_info):
+            with self.assertRaises(ValueError):
+                _validate_browser_url("https://example.test")
+
+    def test_public_dns_result_is_allowed(self):
+        from unittest.mock import patch
+        from ollacode.tools import _validate_browser_url
+
+        fake_info = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ]
+        with patch("ollacode.tools.socket.getaddrinfo", return_value=fake_info):
+            _validate_browser_url("https://example.test")
 
 
 
