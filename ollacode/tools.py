@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+PACKAGE_SPEC_PATTERN = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\\[[A-Za-z0-9._,-]+\\])?"
+    r"(?:\\s*(?:===|==|!=|<=|>=|~=|<|>)\\s*[A-Za-z0-9!.*+_-]+"
+    r"(?:\\s*,\\s*(?:===|==|!=|<=|>=|~=|<|>)\\s*[A-Za-z0-9!.*+_-]+)*)?$"
+)
+
 DANGEROUS_PATTERNS = [
     r"\brm\s+-rf\s+/", r"\bformat\s+[a-zA-Z]:", r"\bdel\s+/[sS]\s+/[qQ]\s+",
     r"\brd\s+/[sS]\s+/", r">\s*/dev/sd[a-z]", r":\(\)\{.*\}", r"mkfs\.", r"dd\s+if=.*of=/dev/",
@@ -291,7 +297,7 @@ def get_tool_schemas() -> list[dict[str, Any]]:
         {"type":"function","function":{"name":"list_dir","description":"List directory contents.","parameters":{"type":"object","properties":{"path":{"type":"string","default":"."},"cwd":{"type":"string"}}}}},
         {"type":"function","function":{"name":"file_tree","description":"Show project structure as a tree.","parameters":{"type":"object","properties":{"path":{"type":"string","default":"."},"max_depth":{"type":"integer","default":4},"exclude":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"}}}}},
         {"type":"function","function":{"name":"grep_search","description":"Search for a regex pattern within files.","parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"case_sensitive":{"type":"boolean","default":True},"file_pattern":{"type":"string"},"max_results":{"type":"integer","default":50},"cwd":{"type":"string"}},"required":["pattern"]}}},
-        {"type":"function","function":{"name":"python_env","description":"Manage Python virtual environments.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","info","install","run","run_module"]},"venv_path":{"type":"string"},"packages":{"type":"array","items":{"type":"string"}},"script":{"type":"string"},"cwd":{"type":"string"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"python_env","description":"Manage Python virtual environments.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","info","install","run","run_module"]},"venv_path":{"type":"string"},"packages":{"type":"array","items":{"type":"string","minLength":1,"maxLength":200,"pattern":PACKAGE_SPEC_PATTERN.pattern},"maxItems":20},"script":{"type":"string"},"cwd":{"type":"string"}},"required":["action"]}}},
         {"type":"function","function":{"name":"web_search","description":"Search the web via DuckDuckGo.","parameters":{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","default":5}},"required":["query"]}}},
         {"type":"function","function":{"name":"browser_control","description":"Control a browser using Playwright.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"},"headless":{"type":"boolean","default":True},"steps":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string","enum":["goto","click","fill","screenshot","evaluate","get_text","close"]},"url":{"type":"string"},"selector":{"type":"string"},"text":{"type":"string"},"script":{"type":"string"},"screenshot_path":{"type":"string"}},"required":["action"]}},"cwd":{"type":"string"}}}}},
     ]
@@ -314,7 +320,19 @@ def _validate_schema_value(value: Any, schema: dict[str, Any], path: str) -> lis
         return errors
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{path} must be one of: {', '.join(map(str, schema['enum']))}")
+    if expected == "string":
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            errors.append(f"{path} must be at least {schema['minLength']} characters")
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"{path} must be at most {schema['maxLength']} characters")
+        if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
+            errors.append(f"{path} has an invalid format")
     if expected == "array":
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errors.append(f"{path} must contain at least {schema['minItems']} item(s)")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(f"{path} must contain at most {schema['maxItems']} item(s)")
+
         item_schema = schema.get("items")
         if item_schema:
             for i, item in enumerate(value):
