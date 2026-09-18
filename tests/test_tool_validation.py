@@ -160,6 +160,26 @@ class ToolValidationTests(unittest.TestCase):
 
 
 
+    def test_python_env_filters_sensitive_environment_names(self):
+        from unittest.mock import patch
+        from ollacode.tools import _get_python_env
+
+        fake = {
+            "PATH": "/usr/bin",
+            "HOME": "/home/test",
+            "API_KEY": "secret",
+            "GITHUB_TOKEN": "secret",
+            "NORMAL_VALUE": "ok",
+        }
+        with patch.dict("ollacode.tools.os.environ", fake, clear=True):
+            env = _get_python_env()
+
+        self.assertEqual(env["PATH"], "/usr/bin")
+        self.assertEqual(env["NORMAL_VALUE"], "ok")
+        self.assertNotIn("API_KEY", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
+
     def test_python_package_specifier_is_allowed(self):
         result = validate_tool_call("python_env", {
             "action": "install",
