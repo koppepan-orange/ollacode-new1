@@ -134,6 +134,36 @@ class ToolValidationTests(unittest.TestCase):
             self.assertEqual(error["error_type"], "security_error")
 
 
+
+    def test_python_package_specifier_is_allowed(self):
+        result = validate_tool_call("python_env", {
+            "action": "install",
+            "packages": ["requests>=2.31,<3"],
+        })
+        self.assertIsNone(result)
+
+    def test_python_package_options_are_rejected(self):
+        for value in [
+            "--index-url https://example.test/simple",
+            "-r requirements.txt",
+            "../local.whl",
+            "demo @ https://example.test/demo.whl",
+        ]:
+            result = validate_tool_call("python_env", {
+                "action": "install",
+                "packages": [value],
+            })
+            self.assertEqual(result["error_type"], "invalid_arguments")
+            self.assertTrue(any("packages[0] has an invalid format" in x for x in result["details"]))
+
+    def test_python_package_count_is_limited(self):
+        result = validate_tool_call("python_env", {
+            "action": "install",
+            "packages": ["demo"] * 21,
+        })
+        self.assertEqual(result["error_type"], "invalid_arguments")
+        self.assertIn("packages must contain at most 20 item(s)", result["details"])
+
     def test_stream_accumulates_tool_calls(self):
         client = OllamaClient()
 
